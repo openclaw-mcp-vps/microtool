@@ -1,54 +1,26 @@
-import { NextRequest, NextResponse } from "next/server";
-import { grantPaidAccess, revokePaidAccess } from "@/lib/database";
-import { parseWebhookPurchase, verifyLemonSignature, type LemonWebhookPayload } from "@/lib/payments";
+import { NextResponse } from "next/server";
 
-export const runtime = "nodejs";
+import { processStripeWebhook, verifyWebhookSecret } from "@/lib/payments";
 
-const GRANT_EVENTS = new Set([
-  "order_created",
-  "subscription_created",
-  "subscription_payment_success"
-]);
+export async function POST(request: Request) {
+  const providedSecret =
+    request.headers.get("x-webhook-secret") ?? request.headers.get("x-microtool-webhook-secret");
 
-const REVOKE_EVENTS = new Set(["subscription_payment_failed", "subscription_cancelled", "subscription_expired"]);
-
-export async function POST(req: NextRequest): Promise<NextResponse> {
-  const rawBody = await req.text();
-  const signature = req.headers.get("x-signature");
-
-  const validSignature = verifyLemonSignature(rawBody, signature);
-  if (!validSignature) {
-    return NextResponse.json({ error: "Invalid webhook signature." }, { status: 401 });
+  if (!verifyWebhookSecret(providedSecret)) {
+    return NextResponse.json({ error: "Invalid webhook secret." }, { status: 401 });
   }
 
-  let payload: LemonWebhookPayload;
   try {
-    payload = JSON.parse(rawBody) as LemonWebhookPayload;
-  } catch {
-    return NextResponse.json({ error: "Invalid webhook payload." }, { status: 400 });
+    const payload = await request.json();
+    const result = await processStripeWebhook(payload);
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        handled: false,
+        message: error instanceof Error ? error.message : "Unable to process webhook."
+      },
+      { status: 400 }
+    );
   }
-
-  const { email, eventName, orderId, toolId } = parseWebhookPurchase(payload);
-
-  if (!toolId || !email) {
-    return NextResponse.json({ ignored: true, reason: "Missing tool_id or user_email." });
-  }
-
-  if (GRANT_EVENTS.has(eventName)) {
-    await grantPaidAccess({
-      toolId,
-      email,
-      source: "lemonsqueezy",
-      orderId
-    });
-
-    return NextResponse.json({ ok: true, event: eventName });
-  }
-
-  if (REVOKE_EVENTS.has(eventName)) {
-    await revokePaidAccess({ toolId, email });
-    return NextResponse.json({ ok: true, event: eventName });
-  }
-
-  return NextResponse.json({ ignored: true, event: eventName });
 }

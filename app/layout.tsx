@@ -1,39 +1,36 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
-const headingFont = Space_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-heading"
-});
-
-const monoFont = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono"
-});
+const title = "microtool";
+const description =
+  "Launch micro-SaaS tools in minutes with hosted auth, payments, and analytics built in.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://microtool.dev"),
   title: {
-    default: "microtool | Ship Micro-SaaS Tools In Minutes",
-    template: "%s | microtool"
+    default: `${title} | Ship Micro-Tools Faster`,
+    template: `%s | ${title}`
   },
-  description:
-    "Build and deploy single-purpose micro-tools with config files instead of boilerplate. Get auth, Lemon Squeezy payments, and hosted subdomains out of the box.",
+  description,
   openGraph: {
-    title: "microtool | Ship Micro-SaaS Tools In Minutes",
-    description:
-      "A lightweight tool builder for solo devs and small teams. Upload config, launch a hosted micro-tool, and monetize immediately.",
-    type: "website",
+    title: `${title} | Ship Micro-Tools Faster`,
+    description,
+    url: "https://microtool.dev",
     siteName: "microtool",
-    url: "https://microtool.dev"
+    type: "website"
   },
   twitter: {
     card: "summary_large_image",
-    title: "microtool | Ship Micro-SaaS Tools In Minutes",
-    description:
-      "Stop rebuilding auth and payments for every idea. Launch profitable micro-tools in minutes."
-  }
+    title: `${title} | Ship Micro-Tools Faster`,
+    description
+  },
+  keywords: [
+    "micro saas",
+    "tool builder",
+    "hosted tools",
+    "stripe checkout",
+    "launch fast"
+  ]
 };
 
 export default function RootLayout({
@@ -43,8 +40,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${headingFont.variable} ${monoFont.variable} bg-[var(--bg)] text-[var(--text)] antialiased`}>
-        {children}
+      <body className="antialiased">
+        <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">{children}</div>
       </body>
     </html>
   );

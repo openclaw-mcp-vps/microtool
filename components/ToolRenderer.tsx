@@ -1,159 +1,156 @@
 "use client";
 
-import { Loader2, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import type { ToolConfig } from "@/lib/database";
+import { Calculator, Sparkles } from "lucide-react";
+import { motion } from "framer-motion";
 
-type ToolRendererProps = {
-  toolId: string;
-  toolName: string;
-  config: ToolConfig;
-};
+import { formatToolResult, safeEvaluateExpression, type ToolConfig } from "@/lib/config-parser";
 
-type ToolFormValues = Record<string, string>;
+type FormValues = Record<string, string | number>;
 
-function isFormulaSafe(formula: string): boolean {
-  return /^[a-zA-Z0-9_\s+\-*/().,%]*$/.test(formula);
+function fieldDefaultValue(field: ToolConfig["fields"][number]): string | number {
+  if (field.defaultValue !== undefined) {
+    return field.defaultValue;
+  }
+
+  if (field.type === "number") {
+    return 0;
+  }
+
+  if (field.type === "select") {
+    return field.options?.[0] ?? "";
+  }
+
+  return "";
 }
 
-function formatResult(result: unknown, outputFormat: ToolConfig["outputFormat"]): string {
-  if (typeof result !== "number" || Number.isNaN(result)) {
-    return String(result);
-  }
-
-  if (outputFormat === "currency") {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 2
-    }).format(result);
-  }
-
-  if (outputFormat === "percentage") {
-    return `${(result * 100).toFixed(2)}%`;
-  }
-
-  if (outputFormat === "number") {
-    return new Intl.NumberFormat("en-US", {
-      maximumFractionDigits: 4
-    }).format(result);
-  }
-
-  return String(result);
-}
-
-export default function ToolRenderer({ toolId, toolName, config }: ToolRendererProps) {
-  const [result, setResult] = useState<string | null>(null);
+export default function ToolRenderer({
+  tool,
+  trackingSubdomain
+}: {
+  tool: ToolConfig;
+  trackingSubdomain?: string;
+}) {
+  const [result, setResult] = useState<string>("");
   const [error, setError] = useState<string>("");
-  const [isCalculating, setIsCalculating] = useState(false);
 
-  const defaultValues = useMemo(() => {
-    const entries = config.inputs.map((input) => [input.id, input.defaultValue ?? ""]);
+  const defaultValues: FormValues = useMemo(() => {
+    const entries = tool.fields.map((field) => [field.id, fieldDefaultValue(field)]);
     return Object.fromEntries(entries);
-  }, [config.inputs]);
+  }, [tool.fields]);
 
-  const { register, handleSubmit } = useForm<ToolFormValues>({
-    defaultValues
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors }
+  } = useForm<FormValues>({ defaultValues });
+
+  const liveValues = watch();
+
+  const liveEstimate = useMemo(() => {
+    try {
+      const raw = safeEvaluateExpression(tool.formula.expression, liveValues);
+      return formatToolResult(raw, tool.result);
+    } catch {
+      return "Fill in all required numeric fields to preview a result.";
+    }
+  }, [liveValues, tool.formula.expression, tool.result]);
+
+  const onSubmit = handleSubmit(async (values) => {
+    try {
+      const raw = safeEvaluateExpression(tool.formula.expression, values);
+      setResult(formatToolResult(raw, tool.result));
+      setError("");
+
+      if (trackingSubdomain) {
+        await fetch(`/api/tools/${trackingSubdomain}/run`, { method: "POST" });
+      }
+    } catch (runError) {
+      setResult("");
+      setError(runError instanceof Error ? runError.message : "Unable to compute result.");
+    }
   });
 
-  async function onSubmit(values: ToolFormValues): Promise<void> {
-    setIsCalculating(true);
-    setError("");
-
-    try {
-      if (!isFormulaSafe(config.formula)) {
-        throw new Error("Formula contains unsupported characters.");
-      }
-
-      const keys = config.inputs.map((input) => input.id);
-      const normalizedValues = config.inputs.map((input) => {
-        const rawValue = values[input.id] ?? "";
-        if (input.type === "number") {
-          const numeric = Number(rawValue);
-          if (Number.isNaN(numeric)) {
-            throw new Error(`Input \"${input.label}\" must be numeric.`);
-          }
-
-          return numeric;
-        }
-
-        return rawValue;
-      });
-
-      const evaluator = new Function(...keys, `"use strict"; return (${config.formula});`) as (
-        ...args: Array<string | number>
-      ) => unknown;
-
-      const output = evaluator(...normalizedValues);
-      const formatted = formatResult(output, config.outputFormat);
-      setResult(formatted);
-
-      await fetch("/api/tools", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          action: "track_run",
-          toolId
-        })
-      });
-    } catch (submitError) {
-      const message =
-        submitError instanceof Error ? submitError.message : "Tool execution failed unexpectedly.";
-      setError(message);
-    } finally {
-      setIsCalculating(false);
-    }
-  }
-
   return (
-    <div className="surface mx-auto w-full max-w-3xl p-6 sm:p-8">
-      <p className="eyebrow">{toolName}</p>
-      <h2 className="mt-2 text-2xl font-semibold">{config.headline}</h2>
-      <p className="mt-2 text-sm text-[var(--text-soft)]">{config.description}</p>
+    <section className="surface rounded-2xl p-5 sm:p-6">
+      <div className="mb-4 flex items-center gap-2">
+        <Calculator className="h-5 w-5 text-blue-400" />
+        <h2 className="text-xl font-semibold">{tool.name}</h2>
+      </div>
+      <p className="mb-6 text-sm leading-relaxed text-slate-300">{tool.tagline}</p>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="mt-6 grid gap-4">
-        {config.inputs.map((input) => (
-          <label key={input.id} className="grid gap-1.5 text-sm">
-            {input.label}
-            <input
-              {...register(input.id, {
-                required: input.required ? `${input.label} is required` : false
-              })}
-              type={input.type === "number" ? "number" : "text"}
-              step={input.type === "number" ? "any" : undefined}
-              className="rounded-lg border bg-[#0b1018] px-3 py-2 outline-none transition focus:border-[var(--brand)]"
-            />
-            {input.helperText ? (
-              <span className="text-xs text-[var(--text-soft)]">{input.helperText}</span>
+      <form onSubmit={onSubmit} className="space-y-4">
+        {tool.fields.map((field) => (
+          <label key={field.id} className="block">
+            <span className="mb-1 block text-sm font-medium text-slate-200">{field.label}</span>
+            {field.description ? <p className="mb-2 text-xs text-slate-400">{field.description}</p> : null}
+
+            {field.type === "select" ? (
+              <select
+                className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100"
+                {...register(field.id, { required: field.required })}
+              >
+                {field.options?.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type={field.type === "number" ? "number" : "text"}
+                placeholder={field.placeholder}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100"
+                {...register(field.id, {
+                  required: field.required,
+                  valueAsNumber: field.type === "number"
+                })}
+              />
+            )}
+
+            {errors[field.id] ? (
+              <span className="mt-1 block text-xs text-red-400">This field is required.</span>
             ) : null}
           </label>
         ))}
 
-        <button
-          type="submit"
-          disabled={isCalculating}
-          className="mt-2 inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-4 py-2 font-medium text-[#04150f] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
-        >
-          {isCalculating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-          Run Tool
-        </button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-400"
+          >
+            Calculate
+          </button>
+          <div className="text-xs text-slate-400">Live estimate: {liveEstimate}</div>
+        </div>
       </form>
 
-      {result ? (
-        <div className="mt-6 rounded-xl border border-[var(--brand)] bg-[var(--brand-soft)] p-4">
-          <p className="text-xs uppercase tracking-[0.14em] text-[#8be3bc]">{config.outputLabel}</p>
-          <p className="mt-2 text-2xl font-semibold text-[#d6ffe9]">{result}</p>
-        </div>
+      {error ? (
+        <p className="mt-4 rounded-xl border border-red-500/40 bg-red-950/40 p-3 text-sm text-red-200">{error}</p>
       ) : null}
 
-      {error ? (
-        <div className="mt-6 rounded-xl border border-[var(--danger)]/80 bg-[#2a1316] p-4 text-sm text-[#ffb3b3]">
-          {error}
-        </div>
+      {result ? (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35 }}
+          className="mt-5 rounded-2xl border border-emerald-500/40 bg-emerald-950/30 p-4"
+        >
+          <p className="mb-1 text-xs uppercase tracking-wide text-emerald-300">{tool.result.label}</p>
+          <p className="text-2xl font-semibold text-emerald-100">{result}</p>
+          {tool.cta ? (
+            <div className="mt-3 rounded-xl border border-emerald-500/30 bg-slate-950/50 p-3">
+              <p className="flex items-center gap-2 text-sm font-semibold text-emerald-200">
+                <Sparkles className="h-4 w-4" />
+                {tool.cta.title}
+              </p>
+              <p className="mt-1 text-sm text-slate-300">{tool.cta.description}</p>
+            </div>
+          ) : null}
+        </motion.div>
       ) : null}
-    </div>
+    </section>
   );
 }

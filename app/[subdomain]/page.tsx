@@ -1,46 +1,18 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
-import Script from "next/script";
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import AccessGate from "@/components/AccessGate";
+
 import ToolRenderer from "@/components/ToolRenderer";
-import {
-  getToolBySubdomain,
-  hasPaidAccess,
-  recordToolView,
-  type ToolRecord
-} from "@/lib/database";
-import {
-  getSessionFromCookiesStore,
-  hasPaidToolCookieFromStore
-} from "@/lib/auth";
-import { buildCheckoutUrl } from "@/lib/payments";
+import { ACCESS_COOKIE_NAME, hasPaidAccessCookie } from "@/lib/auth";
+import { getToolBySubdomain, incrementToolVisit } from "@/lib/data-store";
 
-type ToolPageProps = {
-  params: Promise<{
-    subdomain: string;
-  }>;
-};
-
-async function getOrigin(): Promise<string> {
-  const headerStore = await headers();
-  const host = headerStore.get("x-forwarded-host") ?? headerStore.get("host") ?? "localhost:3000";
-  const proto = headerStore.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
-}
-
-async function getToolForPage(subdomain: string): Promise<ToolRecord | null> {
+export async function generateMetadata({
+  params
+}: {
+  params: Promise<{ subdomain: string }>;
+}): Promise<Metadata> {
+  const { subdomain } = await params;
   const tool = await getToolBySubdomain(subdomain);
-  if (!tool || tool.status !== "deployed") {
-    return null;
-  }
-
-  return tool;
-}
-
-export async function generateMetadata({ params }: ToolPageProps): Promise<Metadata> {
-  const resolvedParams = await params;
-  const tool = await getToolBySubdomain(resolvedParams.subdomain);
 
   if (!tool) {
     return {
@@ -50,59 +22,86 @@ export async function generateMetadata({ params }: ToolPageProps): Promise<Metad
 
   return {
     title: tool.name,
-    description: tool.description,
+    description: tool.tagline,
     openGraph: {
-      title: tool.name,
-      description: tool.description,
+      title: `${tool.name} | microtool`,
+      description: tool.tagline,
       type: "website"
     }
   };
 }
 
-export const dynamic = "force-dynamic";
+export default async function HostedToolPage({
+  params
+}: {
+  params: Promise<{ subdomain: string }>;
+}) {
+  const { subdomain } = await params;
+  const tool = await getToolBySubdomain(subdomain);
 
-export default async function ToolPage({ params }: ToolPageProps) {
-  const resolvedParams = await params;
-  const tool = await getToolForPage(resolvedParams.subdomain);
-
-  if (!tool) {
+  if (!tool || tool.deployStatus !== "deployed") {
     notFound();
   }
 
-  await recordToolView(tool.id);
+  await incrementToolVisit(subdomain);
 
-  const session = await getSessionFromCookiesStore();
-  const hasCookieAccess = await hasPaidToolCookieFromStore(tool.id);
-
-  const ownerAccess = session?.email === tool.ownerEmail;
-  const paidAccess = session?.email
-    ? await hasPaidAccess({ toolId: tool.id, email: session.email })
-    : false;
-
-  const hasAccess = ownerAccess || paidAccess || hasCookieAccess;
-
-  const origin = await getOrigin();
-  const checkoutUrl = buildCheckoutUrl({
-    toolId: tool.id,
-    email: session?.email,
-    successUrl: `${origin}/dashboard?checkout=success&tool=${tool.id}`
-  });
+  const cookieStore = await cookies();
+  const hasAccess = hasPaidAccessCookie(cookieStore.get(ACCESS_COOKIE_NAME)?.value);
 
   return (
-    <main className="min-h-screen px-4 pb-16 pt-8 sm:px-6 lg:px-8">
-      <Script src="https://app.lemonsqueezy.com/js/lemon.js" strategy="afterInteractive" />
-
-      <div className="mx-auto mb-6 flex w-full max-w-3xl items-center justify-between rounded-lg border border-[var(--line)] bg-[#0f1623]/80 px-4 py-2.5 text-sm text-[var(--text-soft)]">
-        <span>microtool hosted runtime</span>
-        <span className="rounded-full border border-[var(--line)] bg-[#0b1018] px-2.5 py-1 font-mono text-xs">
-          {tool.subdomain}.microtool.dev
-        </span>
-      </div>
+    <main className="space-y-6 py-4 sm:py-8">
+      <header className="surface rounded-2xl p-6">
+        <p className="text-xs uppercase tracking-wide text-blue-300">Hosted Tool</p>
+        <h1 className="mt-2 text-3xl font-semibold text-slate-50">{tool.name}</h1>
+        <p className="mt-3 max-w-3xl text-sm text-slate-300">{tool.description}</p>
+      </header>
 
       {hasAccess ? (
-        <ToolRenderer toolId={tool.id} toolName={tool.name} config={tool.config} />
+        <ToolRenderer tool={tool} trackingSubdomain={subdomain} />
       ) : (
-        <AccessGate toolId={tool.id} toolName={tool.name} checkoutUrl={checkoutUrl} />
+        <section className="surface rounded-2xl p-6">
+          <h2 className="text-xl font-semibold text-slate-50">Unlock this micro-tool</h2>
+          <p className="mt-2 text-sm text-slate-300">
+            This feature is behind a paid access wall. Complete checkout, then unlock with the same purchase
+            email to set your access cookie.
+          </p>
+
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <article className="rounded-2xl border border-blue-500/30 bg-blue-950/30 p-4">
+              <p className="text-sm text-slate-200">Step 1: Complete purchase</p>
+              <a
+                href={process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK!}
+                className="mt-3 inline-flex rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-400"
+              >
+                Buy Access ($15/mo)
+              </a>
+            </article>
+
+            <article className="rounded-2xl border border-emerald-500/30 bg-emerald-950/20 p-4">
+              <p className="text-sm text-slate-200">Step 2: Unlock this browser</p>
+              <form action="/api/access" method="POST" className="mt-3 space-y-3">
+                <input type="hidden" name="redirectTo" value={`/${subdomain}`} />
+                <label className="block text-xs text-slate-300" htmlFor="email">
+                  Purchase Email
+                </label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  required
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100"
+                  placeholder="you@company.com"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400"
+                >
+                  Verify and Unlock
+                </button>
+              </form>
+            </article>
+          </div>
+        </section>
       )}
     </main>
   );
